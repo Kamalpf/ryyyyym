@@ -1,0 +1,96 @@
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
+from scrapy.crawler import CrawlerProcess
+from scrapy.spiders import Spider
+from scrapy.selector import Selector
+import pyperclip
+
+
+class ReleaseSpider(Spider):
+    name = "rym_release"
+
+    def __init__(self, url, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.start_urls = [url]
+    
+    def parse(self, response):
+        # Extract album information from the HTML content
+        album_title = response.css("div.album_title::text").get(default='').strip()
+        artist_name = response.css("h1.band_name::text").get(default='').strip()
+        release_year = response.css("span[itemprop='datePublished']::text").get(default='').strip()[1:5]
+
+        artist_origin_element = response.css("#album_credits > a").get()
+        artist_origin = ""
+        if artist_origin_element:
+            artist_origin = Selector(text=artist_origin_element).css("a::text").get()
+
+        genre_elements = response.css("a.genre")
+        genres = [genre.css("::text").get(default='').replace(' ', '_') for genre in genre_elements]
+
+        descriptor_elements = response.css("a.descriptor")
+        descriptors = [descriptor.css("::text").get(default='') for descriptor in descriptor_elements]
+
+        template = f"""
+            🔹Artist: #{artist_name} 
+            🔹Album: {album_title}
+            🔹Genre: {' '.join(['#' + genre for genre in genres])}
+            🔹Year: {release_year}
+            🔹Origin: {artist_origin}
+            🔹Descriptors: {' '.join(['#' + descriptor for descriptor in descriptors])}
+        """
+
+        yield {
+            'info': template
+        }
+
+def start(update, context):
+    update.message.reply_text("Welcome to RYM Album Scraper! Send me the URL of an album on RateYourMusic.com that you want to scrape.")
+
+def help(update, context):
+    update.message.reply_text("Send me the URL of an album on RateYourMusic.com that you want to scrape.")
+
+def scrape_url(update, context):
+    try:
+        url = update.message.text
+        process = CrawlerProcess(settings={
+            'FEED_FORMAT': 'csv',
+            'FEED_URI': 'output.csv',
+            'USER_AGENT': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'
+        })
+        process.crawl(ReleaseSpider, url=url)
+        process.start()
+
+        with open("output.csv", "r") as f:
+            data = f.read()
+            pyperclip.copy(data)
+
+        context.bot.send_message(chat_id=update.effective_chat.id, text=data)
+    except Exception as e:
+        context.bot.send_message(chat_id=update.effective_chat.id, text=f"An error occurred while scraping the specified URL: {e}")
+
+def invalid_input_handler(update, context):
+    update.message.reply_text("Please send me a valid URL.")
+    
+
+# Create an updater object
+updater = Updater(token='6226600364:AAFxOx1meqQo9ST6d-2m1g3Yx2SvPRDZ0qk', use_context=True, request_kwargs={'connect_timeout': 30})
+
+# Get the dispatcher to register handlers
+dp = updater.dispatcher
+
+# Define handlers
+start_handler = CommandHandler('start', start)
+help_handler = CommandHandler('help', help)
+url_handler = MessageHandler(Filters.regex(r'https?://\S+'), scrape_url)
+invalid_input = MessageHandler(Filters.all, invalid_input_handler)
+
+# Register handlers
+dp.add_handler(start_handler)
+dp.add_handler(help_handler)
+dp.add_handler(url_handler)
+dp.add_handler(invalid_input)
+
+# Start polling for updates
+updater.start_polling()
+
+# Keep running the program until the user stops it
+updater.idle()
